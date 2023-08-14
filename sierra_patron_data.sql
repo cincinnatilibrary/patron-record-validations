@@ -3,6 +3,8 @@
 -- It fetches details such as their address, barcodes, alternative IDs, phone numbers, and email addresses.
 -- Basic validation checks are also performed for email addresses.
 
+-- Note: All timestamps are converted to UNIX EPOCH timestamps (UTC) and stored as such* in the local database
+
 select
 	rm.id as patron_record_id,
 	rm.record_num as patron_record_num,
@@ -21,11 +23,16 @@ select
 	) as barcode1,
 	pr.home_library_code,
     pr.ptype_code,
-	date(rm.creation_date_gmt)       as create_date,
-	date(rm.deletion_date_gmt)       as delete_date,
-	date(rm.record_last_updated_gmt) as update_date,
-	date(pr.expiration_date_gmt)	 as expire_date,
-	date(pr.activity_gmt)            as active_date,
+	-- rm.creation_date_gmt at time zone 'UTC'       as create_timestamp_utc,
+	-- rm.deletion_date_gmt at time zone 'UTC'       as delete_timestamp_utc,
+	-- rm.record_last_updated_gmt at time zone 'UTC' as update_timestamp_utc,
+	-- pr.expiration_date_gmt at time zone 'UTC'     as expire_timestamp_utc,
+	-- pr.activity_gmt at time zone 'UTC'            as active_timestamp_utc,
+    extract(epoch from rm.creation_date_gmt)         as create_timestamp_utc,
+    extract(epoch from rm.deletion_date_gmt)         as delete_timestamp_utc,
+	extract(epoch from rm.record_last_updated_gmt)   as update_timestamp_utc,
+	extract(epoch from pr.expiration_date_gmt)       as expire_timestamp_utc,
+	extract(epoch from pr.activity_gmt)              as active_timestamp_utc,
 	pr.claims_returned_total,
 	cast(pr.owed_amt * 100 as INTEGER) as owed_amt_cents,
 	pr.mblock_code,
@@ -43,9 +50,10 @@ select
 		select 
 			json_agg(
 				json_build_object(
-					'address_id', pra.id,
+                    -- It doen't seem like tracking the id is actually useful
+					-- 'address_id', pra.id,
+                    --
 					'address_type_code', prat.code, 
-	        		-- 'patron_record_address_type_id', pra.patron_record_address_type_id,
 	        		'addr1', pra.addr1,
 	        		'addr2', pra.addr2,
 	        		'addr3', pra.addr3,
@@ -55,8 +63,7 @@ select
 	        		'region', pra.region
 	        	)
 	        	order by
-	        		pra.display_order,
-	        		pra.id
+	        		pra.display_order
 	    	)
 	    from
 	    	sierra_view.patron_record_address as pra
@@ -90,7 +97,9 @@ select
 		select
 			json_agg(
 				json_build_object(
-					'varfield_id', v.id,
+                    -- the id isn't very useful here
+					-- 'varfield_id', v.id,
+                    --
 					'identifier_type', v.varfield_type_code, 
 					'identifier', v.field_content
 				)
@@ -118,14 +127,16 @@ select
 	(
 		select
 		json_agg(
-			json_build_object ( 
-				'phone_id', prp.id,
+			json_build_object (
+                -- the id isn't very useful here
+				-- 'phone_id', prp.id,
 				'phone_number', prp.phone_number,
-			    'phone_type', vtn.short_name,
+			    'phone_type', vtn.short_name
 			    -- validations
-			    'invalid_non_numeric_characters', CASE WHEN NOT prp.phone_number ~ '^[0-9]+$' THEN TRUE ELSE FALSE END,
-                'invalid_length', CASE WHEN NOT LENGTH(prp.phone_number) BETWEEN 10 AND 15 THEN TRUE ELSE FALSE END,
-                'invalid_has_spaces', CASE WHEN POSITION(' ' IN prp.phone_number) > 0 THEN TRUE ELSE FALSE END
+                -- these are interesting to do at the postgres level, but they're better left to their own table, and performed as a local db trigger
+			    -- 'invalid_non_numeric_characters', CASE WHEN NOT prp.phone_number ~ '^[0-9]+$' THEN TRUE ELSE FALSE END,
+                -- 'invalid_length', CASE WHEN NOT LENGTH(prp.phone_number) BETWEEN 10 AND 15 THEN TRUE ELSE FALSE END,
+                -- 'invalid_has_spaces', CASE WHEN POSITION(' ' IN prp.phone_number) > 0 THEN TRUE ELSE FALSE END
 			)
 			order by
 				prp.display_order 
@@ -158,22 +169,26 @@ select
 		select
 			json_agg(
 				json_build_object( 
-				    -- record_id,
-					'varfield_id', id,
-					'email', field_content,
-					'invalid_has_spaces', CASE WHEN position(' ' in field_content) > 0 THEN TRUE ELSE FALSE END,
-                	'invalid_missing_or_multiple_at', CASE WHEN length(field_content) - length(replace(field_content, '@', '')) != 1 THEN TRUE ELSE FALSE END
+                    -- the id isn't very useful here
+					-- 'varfield_id', id,
+                    --
+					'email', field_content
+                    -- validations
+                    -- these are interesting to do at the postgres level, but they're better left to their own table, and performed as a local db trigger
+					-- 'invalid_has_spaces', CASE WHEN position(' ' in field_content) > 0 THEN TRUE ELSE FALSE END,
+                	-- 'invalid_missing_or_multiple_at', CASE WHEN length(field_content) - length(replace(field_content, '@', '')) != 1 THEN TRUE ELSE FALSE END
 			    )
 			)
 		from 
 		    split_values	
-	) as emails_json
+	)::TEXT as emails_json
 from 
 	sierra_view.record_metadata as rm
 	left outer join sierra_view.patron_record as pr on pr.record_id = rm.id 
 where 
 	rm.record_type_code = 'p'
-    and date(rm.record_last_updated_gmt) >= %s
+    and rm.record_last_updated_gmt >= to_timestamp(%s)
+
 
 -- The split_values CTE splits email addresses stored as comma-separated values in the sierra_view.varfield table.
 -- This CTE is used later to extract individual email addresses and perform basic validation checks.
