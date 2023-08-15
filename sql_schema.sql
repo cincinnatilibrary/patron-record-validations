@@ -25,8 +25,11 @@ CREATE TABLE IF NOT EXISTS patrons (
     home_library_code TEXT,
     campus_code TEXT,
     create_timestamp_utc INTEGER,
-    delete_timestamp_utc INTEGER,
-    update_timestamp_utc INTEGER,
+    delete_timestamp_utc INTEGER,  -- active records won't have a delete data
+                                   -- TODO: some sort of trigger on deletion
+                                   -- ... date != NULL to also delete json data?
+    update_timestamp_utc INTEGER,  -- update of the record*
+                                   -- ( https://documentation.iii.com/sierrahelp/Default.htm#sril/sril_records_fixed_field_types_all.html )
     expire_timestamp_utc INTEGER,
     active_timestamp_utc INTEGER,
     claims_returned_total INTEGER,
@@ -36,9 +39,11 @@ CREATE TABLE IF NOT EXISTS patrons (
     num_revisions INTEGER
 );
 
+
 CREATE INDEX IF NOT EXISTS idx_patrons_patron_record_id on patrons (
     patron_record_id
 );
+
 
 CREATE INDEX IF NOT EXISTS idx_patrons_update_timestamp_utc on patrons (
     update_timestamp_utc
@@ -59,6 +64,7 @@ CREATE TABLE IF NOT EXISTS patron_json_data (
     FOREIGN KEY (patron_record_id) REFERENCES patrons(patron_record_id)
     UNIQUE (patron_record_id, json_data_type)
 );
+
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_patron_json_data_unique_composite ON patron_json_data(
     patron_record_id, 
@@ -86,11 +92,13 @@ CREATE TABLE IF NOT EXISTS patron_json_changes(
     update_timestamp_utc INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
+
 CREATE INDEX IF NOT EXISTS idx_patron_json_changes_composite ON patron_json_changes(
     patron_record_id,
     json_data_type,
     update_timestamp_utc
 );
+
 
 CREATE INDEX IF NOT EXISTS idx_patron_json_changes_diff_is_not_null_partial_index ON patron_json_changes(
     diff
@@ -110,11 +118,8 @@ ANALYZE idx_patron_json_changes_diff_is_null_partial_index;
 CREATE TRIGGER IF NOT EXISTS trg_patron_json_data_update
 AFTER UPDATE ON patron_json_data
 FOR EACH ROW
-WHEN 
-    OLD.json_data != NEW.json_data                  -- json data is NOT matching
-    -- AND OLD.json_data_type = NEW.json_data_type     -- data types ARE matching
-    -- AND OLD.patron_record_id = NEW.patron_record_id -- patron_record_id ARE matching*
-                                                    -- (NOTE this may not be necessary, but... )
+WHEN
+    OLD.json_data != NEW.json_data  -- json data is NOT matching
 BEGIN
     INSERT INTO patron_json_changes(
         json_data_type,
@@ -125,11 +130,12 @@ BEGIN
         NEW.json_data_type,
         NEW.patron_record_id,
         json_diff(
-            NEW.json_data, 
-            OLD.json_data
+            OLD.json_data,
+            NEW.json_data
         )
     );
 END;
+
 
 -- INSERTS would be new values without previous values
 CREATE TRIGGER IF NOT EXISTS trg_patron_json_data_insert
